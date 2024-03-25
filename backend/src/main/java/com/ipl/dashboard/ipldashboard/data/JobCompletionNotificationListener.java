@@ -1,6 +1,7 @@
 package com.ipl.dashboard.ipldashboard.data;
 
 import com.ipl.dashboard.ipldashboard.model.Team;
+import jakarta.persistence.EntityManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.BatchStatus;
@@ -12,7 +13,6 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -22,11 +22,13 @@ public class JobCompletionNotificationListener implements JobExecutionListener {
     private static final Logger log = LoggerFactory.getLogger(JobCompletionNotificationListener.class);
 
     private final JdbcTemplate jdbcTemplate;
+    private final EntityManager em;
     private final AtomicLong nextId = new AtomicLong(0); // Thread-safe counter for IDs
 
     @Autowired
-    public JobCompletionNotificationListener(JdbcTemplate jdbcTemplate) {
+    public JobCompletionNotificationListener(JdbcTemplate jdbcTemplate, EntityManager em) {
         this.jdbcTemplate = jdbcTemplate;
+        this.em = em;
     }
 
     @Override
@@ -37,10 +39,28 @@ public class JobCompletionNotificationListener implements JobExecutionListener {
             Map<String, Team> teamData = new HashMap<>();
 
             // Gather team information using queries (with custom row mapper)
-            List<Team> teams = jdbcTemplate.query("select m.team1, count(*) from Match m group by m.team1", new TeamRowMapper());
-            teams.forEach(team -> teamData.put(team.getTeamName(), team));
+            em.createQuery("select m.team1, count(*) from Match m group by m.team1", Object[].class)
+                    .getResultList()
+                    .stream()
+                    .map(e -> new Team((String) e[0], (long) e[1]))
+                    .forEach(team -> teamData.put(team.getTeamName(), team));
 
-            // Similar queries and processing for team2 and winners... (omitted for brevity)
+            em.createQuery("select m.team2, count(*) from Match m group by m.team2", Object[].class)
+                    .getResultList()
+                    .stream()
+                    .forEach(e -> {
+                        Team team = teamData.get((String) e[0]);
+                        team.setTotalMatches(team.getTotalMatches() + (long) e[1]);
+                    });
+
+            em.createQuery("select m.matchWinner, count(*) from Match m group by m.matchWinner", Object[].class)
+                    .getResultList()
+                    .stream()
+                    .forEach(e -> {
+                        Team team = teamData.get((String) e[0]);
+                        if(team != null) team.setTotalWins((long) e[1]);
+                    });
+
 
             // Persist teams to database using JDBC update statements with generated IDs
             for (Team team : teamData.values()) {
